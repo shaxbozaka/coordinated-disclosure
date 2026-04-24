@@ -1,21 +1,21 @@
 {
-  "name": "authorized-pentest",
+  "name": "coordinated-disclosure",
   "owner": {
     "name": "shaxbozaka",
     "email": "ataboyevdurbek@gmail.com"
   },
   "metadata": {
-    "description": "Runbook + PoC templates for authorized security engagements on open-source web apps",
+    "description": "Runbook + PoC templates for coordinated vulnerability disclosure on open-source web apps",
     "version": "1.0.0"
   },
   "plugins": [
     {
-      "name": "authorized-pentest",
-      "description": "Runbook for authorized security engagements on open-source web apps — from first probe through coordinated disclosure and patch delivery. Covers scope hygiene, verification discipline, `gh api` advisory workflow, patch delivery when the temporary private fork is inaccessible, typecheck-and-test gates, and standard technique recipes (SSRF error-shape oracle, rate-limit posture measurement, sanitiser-bypass harness with JSDOM strict check, version fingerprint via content-echoing SSRF).",
+      "name": "coordinated-disclosure",
+      "description": "Runbook for coordinated vulnerability disclosure on open-source web apps — from first probe through patch delivery. Covers scope hygiene, verification discipline, `gh api` advisory workflow, patch delivery when the temporary private fork is inaccessible, typecheck-and-test gates, and standard technique recipes (SSRF error-shape oracle, rate-limit posture measurement, sanitiser-bypass harness with JSDOM strict check, version fingerprint via content-echoing SSRF).",
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/authorized-pentest"
+        "./"
       ]
     }
   ]

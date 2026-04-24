@@ -1,6 +1,6 @@
-# authorized-pentest
+# coordinated-disclosure
 
-A Claude Code skill + plugin marketplace for running authorized security engagements on open-source web apps — from first probe through coordinated disclosure and patch delivery.
+A Claude Code skill + plugin marketplace for running coordinated vulnerability disclosure on open-source web apps — from first probe through patch delivery.
 
 **What Claude can do with it:** probe non-destructively, verify every finding with discipline, write the GitHub Security Advisory via `gh api`, ship patches as `git format-patch` files when the advisory's temporary private fork is inaccessible, and do it all with typecheck + test gates before committing. Plus a pile of reusable techniques: SSRF error-shape oracle, rate-limit posture measurement, sanitiser-bypass harness with JSDOM strict check, version-fingerprint via content-echoing SSRF, living-target snapshot diffing.
 
@@ -9,21 +9,20 @@ A Claude Code skill + plugin marketplace for running authorized security engagem
 ### As a Claude Code plugin (recommended)
 
 ```
-/plugin marketplace add shaxbozaka/authorized-pentest
-/plugin install authorized-pentest@authorized-pentest
+/plugin marketplace add shaxbozaka/coordinated-disclosure
+/plugin install coordinated-disclosure@coordinated-disclosure
 ```
 
 After install the skill appears in the registry and activates when a prompt matches the trigger description ("I have authorization to audit…", "GHSA collaborator", "bug-bounty scope", etc.).
 
-### Manually
+### Manually (no Claude Code plugin system)
 
 ```bash
 mkdir -p ~/.claude/skills
-cd ~/.claude/skills
-git clone https://github.com/shaxbozaka/authorized-pentest
+git clone https://github.com/shaxbozaka/coordinated-disclosure ~/.claude/skills/coordinated-disclosure
 ```
 
-Restart Claude Code. The skill now lives at `~/.claude/skills/authorized-pentest/` and Claude will pick it up.
+Restart Claude Code. The skill now lives at `~/.claude/skills/coordinated-disclosure/SKILL.md` and Claude will pick it up at session start.
 
 ## When the skill activates
 
@@ -36,26 +35,26 @@ The `description` frontmatter triggers on any of:
 - Any prompt mentioning responsible-disclosure / coordinated-disclosure workflow
 - Stack keywords (Node, TypeScript, Next.js, Better-Auth, Drizzle, ORPC, tRPC, etc.) combined with a security-audit context
 
-It's also invokable by name — just ask Claude to "use the authorized-pentest skill."
+It's also invokable by name — just ask Claude to "use the coordinated-disclosure skill."
 
 ## What's inside
 
 ```
-.claude-plugin/marketplace.json      # plugin metadata
-skills/authorized-pentest/
-  SKILL.md                           # core runbook (≈225 lines, focused)
-  references/poc-templates.md        # 9 reusable probe snippets:
-                                     #   1 auth bootstrap
-                                     #   2 snapshot probe (living-target)
-                                     #   3 rate-limit posture measurement
-                                     #   4 SSRF error-shape oracle
-                                     #   5 sanitiser-bypass harness (JSDOM strict)
-                                     #   6 security-headers audit
-                                     #   7 advisory edit loop (gh api)
-                                     #   8 patch-set export for advisory inlining
-                                     #   9 cleanup rituals
+.claude-plugin/marketplace.json   # plugin metadata
+SKILL.md                          # core runbook (≈225 lines, focused)
+references/
+  poc-templates.md                # 9 reusable probe snippets:
+                                  #   1 auth bootstrap
+                                  #   2 snapshot probe (living-target)
+                                  #   3 rate-limit posture measurement
+                                  #   4 SSRF error-shape oracle
+                                  #   5 sanitiser-bypass harness (JSDOM strict)
+                                  #   6 security-headers audit
+                                  #   7 advisory edit loop (gh api)
+                                  #   8 patch-set export for advisory inlining
+                                  #   9 cleanup rituals
 README.md
-LICENSE                              # MIT
+LICENSE                           # MIT
 ```
 
 ## Non-goals
@@ -66,7 +65,7 @@ LICENSE                              # MIT
 
 ## Why this exists
 
-Most pentest content online is either "101-level list of OWASP bugs" or "obfuscated offensive tooling marketed as red-team." The gap in the middle — actually running a coordinated-disclosure engagement: verifying claims, writing a clean advisory, shipping patches when you don't have push access to the temporary private fork — is folklore you only learn by screwing it up once. This skill is that folklore, written down, with the specific command-line recipes that save you two hours per engagement.
+Most security-research content online is either "101-level list of OWASP bugs" or "obfuscated offensive tooling marketed as red-team." The gap in the middle — actually running a coordinated-disclosure engagement: verifying claims, writing a clean advisory, shipping patches when you don't have push access to the temporary private fork — is folklore you only learn by screwing it up once. This skill is that folklore, written down, with the specific command-line recipes that save you two hours per engagement.
 
 ## Contributing
 
@@ -85,4 +84,4 @@ MIT. Use it, fork it, ship it.
 
 ## Acknowledgements
 
-Distilled from real authorized security engagements where the wrong call cost time, trust, or both.
+Distilled from real coordinated-disclosure engagements where the wrong call cost time, trust, or both.

@@ -1,9 +1,9 @@
 ---
-name: authorized-pentest
-description: "Runbook for authorized security engagements on open-source web apps — from first probe through coordinated disclosure and patch delivery. Use when the user says they have authorization to audit a project (maintainer invite, GitHub Security Advisory collaborator, CTF scope, bug-bounty scope). Covers scoping + authorization hygiene, non-destructive probing, finding verification discipline, writing the advisory via `gh api`, delivering patches when the temporary private fork is inaccessible, typecheck-and-test gates before commit, SSRF oracle / rate-limit / sanitiser audit techniques, and handling the case where a claim turns out wrong. Applies broadly to Node/TypeScript web stacks but the discipline generalises. See references/poc-templates.md for reusable probe scripts."
+name: coordinated-disclosure
+description: "Runbook for coordinated vulnerability disclosure on open-source web apps — from first probe through patch delivery. Use when the user says they have authorization to audit a project (maintainer invite, GitHub Security Advisory collaborator, CTF scope, bug-bounty scope) or wants help with the full disclosure workflow. Covers scoping + authorization hygiene, non-destructive probing, finding verification discipline, writing the advisory via `gh api`, delivering patches when the temporary private fork is inaccessible, typecheck-and-test gates before commit, SSRF oracle / rate-limit / sanitiser audit techniques, and handling the case where a claim turns out wrong. Applies broadly to Node/TypeScript web stacks but the discipline generalises. See references/poc-templates.md for reusable probe scripts."
 ---
 
-# Authorized Penetration Testing Runbook
+# Coordinated Disclosure Runbook
 
 This skill captures the discipline needed to run an authorized engagement end-to-end without embarrassing yourself or the maintainer. Every technique below comes from real engagements where the wrong call cost time, trust, or both.
 
