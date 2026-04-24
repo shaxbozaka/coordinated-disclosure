@@ -1,17 +1,17 @@
 {
-  "name": "coordinated-disclosure",
+  "name": "security-audit",
   "owner": {
     "name": "shaxbozaka",
     "email": "ataboyevdurbek@gmail.com"
   },
   "metadata": {
-    "description": "Runbook + PoC templates for coordinated vulnerability disclosure on open-source web apps",
+    "description": "Claude Code skill for auditing web apps for security vulnerabilities — context-detected inside-codebase vs outside-black-box, source-code audit checklist, server/infra sweep, rate-limit posture deep-dive, PoC probe templates",
     "version": "1.0.0"
   },
   "plugins": [
     {
-      "name": "coordinated-disclosure",
-      "description": "Runbook for coordinated vulnerability disclosure on open-source web apps — from first probe through patch delivery. Covers scope hygiene, verification discipline, `gh api` advisory workflow, patch delivery when the temporary private fork is inaccessible, typecheck-and-test gates, and standard technique recipes (SSRF error-shape oracle, rate-limit posture measurement, sanitiser-bypass harness with JSDOM strict check, version fingerprint via content-echoing SSRF).",
+      "name": "security-audit",
+      "description": "Use when auditing a web app for security vulnerabilities. Handles both internal audits (sitting in your own codebase, filesystem access) and external audits (only URL + written authorization). Context-detects which mode and applies the right checklist. Contains a source-code audit checklist (auth bugs, IDOR, SSRF, injection, crypto misuse, file handling, rate-limits, Docker config), a black-box probing checklist (subdomain enum, port scan, TLS/DNS, admin-panel leakage, error-shape oracles, version fingerprint), a server/infra sweep (management ports, cloud metadata, CDN bypass, backup files, container image CVEs), a rate-limit deep-dive (distributed-counter vs in-memory, XFF trust, cost-inflation DoS), and — after you have findings — advisory writing via gh api and patch delivery when the temporary private fork is gated.",
       "source": "./",
       "strict": false,
       "skills": [

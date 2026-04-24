@@ -1,6 +1,6 @@
 # PoC Templates
 
-Reusable Python + Node snippets for coordinated-disclosure engagements. All examples are intentionally vanilla — no custom dependencies beyond `requests`, `urllib3`, and optionally `jsdom` + `dompurify` for sanitiser harnesses.
+Reusable Python + Node snippets for security-audit engagements. All examples are intentionally vanilla — no custom dependencies beyond `requests`, `urllib3`, and optionally `jsdom` + `dompurify` for sanitiser harnesses.
 
 Adapt the `BASE`, cookie name (`session`, `__Secure-session_token`, etc.), and endpoint paths for each target. Every script is opinionated about rate-limiting itself; keep the `time.sleep(...)` calls in place.
 
