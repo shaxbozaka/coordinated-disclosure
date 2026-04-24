@@ -412,6 +412,102 @@ Cross-reference against current stable. Below-stable by a minor version or more 
 
 ---
 
+## Rate limiting — the four questions
+
+Rate limiting is where half of all auth-layer findings live, and it almost never works the way the app author thought. For every rate-limited endpoint you find, ask all four:
+
+### 1. Is there a limit at all?
+
+```bash
+# From OUTSIDE (black-box) — 20 wrong attempts, count 429s
+# See references/poc-templates.md §3 for the full recipe
+# Quick result:
+#   0/20 × 429  → no rate limit
+#   1-3 / 20    → present but loose (first 429 ≥ attempt #10)
+#   ≥10 / 20    → strong (first 429 ≤ attempt #3)
+```
+
+Missing = credential spray, email flood, OTP brute, password-reset flood.
+
+### 2. Is the counter storage distributed across replicas?
+
+This is the sneaky one. In-memory rate limiters (default for `express-rate-limit`, `fastapi-limiter` without Redis, Go `golang.org/x/time/rate` without shared state) count **per process**. Behind a load balancer with N replicas, the effective budget is N × the configured budget, and a request that hits replica A then replica B is not counted together.
+
+How to detect from source code:
+```bash
+# Look for the store/backend config
+rg -n 'rateLimit\(|RateLimit\(|new Ratelimit\(' src/
+rg -n 'store:\s*new\s+(MemoryStore|InMemoryStore)|MemoryStore\(\)' src/
+# Presence of Redis / shared storage
+rg -n '(RedisStore|IORedisStore|@upstash/ratelimit|Ratelimit\.slidingWindow).*redis' src/
+```
+
+How to detect from black-box (when you can run parallel probes from the same IP):
+- If 20 attempts rate-limit you at #9, try opening 3 simultaneous connections from the same source and firing 20 each.
+- If you can get ~27 attempts through (3 × 9) before limits start firing on all three, the counter is per-process. Shared store would cap all three streams at the same cumulative 9.
+
+### 3. What key is the limit bucketing on?
+
+Common keys and their bypass primitives:
+
+| Bucket key | Bypassable by |
+|---|---|
+| IP (remote_addr) | IPv6 rotation from a single host (many /64 trivially bypass /32 limits); NAT pools |
+| IP from `X-Forwarded-For` (trusted!) | Header spoofing if the server accepts XFF without verifying upstream chain |
+| User ID | Unauthenticated endpoint has no user ID → falls back to looser IP limit, or zero |
+| Session ID | Fresh session per request (clear cookies) — usually trivial |
+| Endpoint-only (no per-caller key) | No bypass — but then one noisy attacker locks out everyone else, so this is only safe on very low budgets |
+
+Grep for the key choice:
+```bash
+rg -n 'keyGenerator|req\.ip\b|req\.headers\[.x-forwarded-for.\]|getClientIp' src/
+rg -n 'rate.*limit.*key|ratelimit.*\.key' src/
+```
+
+Also check: does the server **trust** `X-Forwarded-For` unconditionally? If you sit behind Cloudflare and the app reads `req.ip` from the rightmost XFF entry, attackers can supply their own XFF to unrate-limit themselves:
+
+```bash
+# Probe
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  curl -sk -X POST https://target.example/api/auth/sign-in/email \
+    -H "Content-Type: application/json" \
+    -H "X-Forwarded-For: 10.0.0.$i" \
+    -d '{"email":"nobody@pentest.test","password":"wrong"}' \
+    -o /dev/null -w '%{http_code}\n'
+done
+# If all 12 return 401 (no 429), XFF is trusted and rotation bypasses the limit
+```
+
+### 4. What is this limit actually protecting?
+
+Rate limits protect against different things with different budgets:
+
+| What you're protecting | Sensible budget | Typical endpoints |
+|---|---|---|
+| Credential stuffing / brute-force | 5 / minute / IP + 5 / minute / account | `/sign-in`, `/reset-password/verify` |
+| Enumeration oracle | 20-30 / minute / IP | `/is-username-available`, `/sign-up/email` (via existing-username error) |
+| Email flood (external SMTP cost + victim inbox) | 3 / 10 minutes / email address | `/request-password-reset`, `/send-verification-email`, `/resend-otp` |
+| OTP brute (6-digit space, need ≥5 tries to matter) | 5 / 10 minutes / session | `/two-factor/verify-otp`, `/verify-totp`, `/verify-backup-code` |
+| Cost-inflation DoS (expensive per call) | much tighter, often 10 / hour / user | `/api/ai/*`, `/render-pdf`, `/api/export`, image-resize, GraphQL complexity |
+| Amplification / SSRF abuse | 10 / minute / user | `/url-preview`, `/webhook/test`, `/oembed`, `/fetch-metadata` |
+| WebSocket connection flood | 50 concurrent / IP + 5 new-connections / second | `/ws`, `/socket.io` |
+| File upload storage flood | 10 / minute / user + size cap | `/api/upload`, `/storage/uploadFile` |
+
+A loose limit on a cheap endpoint is fine. A loose limit on a cost-inflation endpoint (every call = $0.10 of GPU time or a full PDF render) is a financial DoS — attackers don't need to land a "traditional" security bug, they just need to spin your costs.
+
+### Rate-limit findings that are always high severity
+
+- **No limit at all on sign-in** → credential spray across the full user base
+- **No limit on password-reset email** → mail-bomb vector + SMTP-cost DoS + reputation damage
+- **No limit on `/is-username-available` or similar enumeration oracle** → attacker enumerates the full userbase cheaply
+- **In-memory store behind N replicas** → effective budget is N× configured; usually discovered during scaling
+- **XFF trusted without verifying upstream chain** → any attacker trivially unratelimits themselves
+- **Cost-inflation endpoint with brute-force-grade budget (`max: 100 / minute`)** → one attacker melts the bill
+
+See `references/source-audit-patterns.md` §9 for framework-specific config patterns (Better-Auth, express-rate-limit, slowapi, Django-ratelimit, Spring's `@RateLimiter`) and their default storage behaviours. See `references/poc-templates.md` §3 for the posture-measurement recipe and the distributed-counter smoke test.
+
+---
+
 ## When you have a finding — verify it before writing it up
 
 **Every sentence in an advisory is a load-bearing claim.** Two failure modes:

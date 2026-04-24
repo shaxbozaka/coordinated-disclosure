@@ -353,21 +353,118 @@ Fix is always: database constraint (UNIQUE) or transactional update with WHERE c
 
 ## 9. Rate limiting
 
+See the main SKILL.md "Rate limiting — the four questions" section for the decision framework. This is the grep-level pattern library to answer each question from source code.
+
+### 9a. Is there a limiter at all?
+
 ```bash
-# Presence of a limiter
-rg -n 'rateLimit|rate_limit|ratelimit|slowDown|express-rate-limit|@upstash/ratelimit|limiter\.check' src/
+# Generic presence check
+rg -n 'rateLimit|rate_limit|ratelimit|slowDown|limiter' src/ | head
 # Auth endpoints that typically need rate limits
 rg -n '(sign-in|signin|login|register|sign-up|signup|forgot|reset.password|2fa|verify-otp|resend.verification|is-username-available)' src/ | head -40
 ```
 
-For each auth endpoint, check: does a limiter wrap it? What's the budget? A budget of `max: 100 per minute` on sign-in is not useful. Tight budgets look like:
+For every auth endpoint, check: does a limiter wrap it?
 
-- `/sign-in/email` — 5 per minute per IP
-- `/sign-up/email` — 3 per minute per IP
-- `/request-password-reset` — 3 per 10 minutes per email
-- `/two-factor/verify-otp` — 5 per 10 minutes per session
-- `/send-verification-email` — 3 per 10 minutes per email
-- `/is-username-available` — 20 per minute per IP (even without a secret, still an enumeration oracle)
+### 9b. Framework-specific config — what the default actually is
+
+Find the rate-limit config object, then check its storage backend:
+
+```bash
+# express-rate-limit — DEFAULT STORE IS IN-MEMORY (per-replica!)
+rg -n 'rateLimit\(\{|createRateLimiter\(|require\(.express-rate-limit.\)' src/
+# Look for its `store:` key — if missing or `MemoryStore`, it's per-process
+rg -nA5 'rateLimit\(' src/ | grep -E 'store:|MemoryStore|RedisStore|MongoStore'
+
+# @upstash/ratelimit — shared by default (Redis at @upstash/redis)
+rg -n 'new Ratelimit\(\{|Ratelimit\.slidingWindow|@upstash/ratelimit' src/
+# Confirm it's backed by a Redis instance, not a memory cache:
+rg -nA3 'new Ratelimit' src/ | grep -E 'redis:|new Redis\('
+
+# Better-Auth — has a built-in `rateLimit` option that's OFF by default
+rg -nA5 'betterAuth\(\{' src/ | grep -E 'rateLimit\s*:'
+# Check for `enabled: true` and `storage: "memory" | "database" | "secondary-storage"`
+# "memory" is the default and is PER-PROCESS. For multi-replica deployments,
+# this needs to be "secondary-storage" with Redis or similar.
+
+# slowapi (FastAPI) — default is in-memory
+rg -n 'from slowapi|Limiter\(' src/
+# Look for `storage_uri=` pointing at Redis/Memcached; absence = in-memory
+rg -nA3 'Limiter\(' src/ | grep -E 'storage_uri|default_limits'
+
+# django-ratelimit — defaults to Django cache, which defaults to LocMem (per-process)
+rg -n '@ratelimit\(|ratelimit\.decorators\.ratelimit' src/
+# Check settings.py for CACHES — if LocMemCache, per-process
+rg -n 'CACHES\s*=|django\.core\.cache\.backends' src/
+
+# Spring Boot Bucket4j / Resilience4j — check for in-memory ProxyManager
+rg -n '@RateLimiter|Bucket4j|Resilience4j.*RateLimiter' src/
+rg -n 'ProxyManager\.builderFor' src/   # JCache / Redis-backed vs in-memory
+
+# Go golang.org/x/time/rate — pure in-process unless wrapped
+rg -n 'rate\.NewLimiter|rate\.Limiter' --glob='*.go' src/
+# These are per-process by definition. For multi-replica, needs an external
+# store (Redis, Memcached, or a distributed rate-limiter library like
+# github.com/go-redis/redis_rate).
+
+# Edge/CDN — grep the deploy config for CDN-layer rules
+rg -n 'rate_limit\|throttle\|traffic_policy' cloudformation/ terraform/ .github/ 2>/dev/null | head
+# Cloudflare / AWS WAF rate-limit rules are separate from app-layer and often missed
+```
+
+### 9c. What key is the limit bucketed on?
+
+```bash
+# Express / Node — default is req.ip
+rg -n 'keyGenerator|req\.ip\b' src/
+# Trust of X-Forwarded-For without trust-proxy config is a common bypass
+rg -n 'app\.set\(.trust proxy|app\.enable\(.trust proxy|trust_proxy' src/
+rg -n 'req\.headers\[.x-forwarded-for.\]|getClientIp\(' src/
+
+# Python — varies by framework
+rg -n 'get_remote_address|request\.client\.host' src/
+# slowapi uses `get_remote_address` which reads Forwarded + XFF; if CDN doesn't
+# strip these, attackers rotate X-Forwarded-For to unrate-limit themselves.
+
+# Go
+rg -n 'r\.RemoteAddr|X-Forwarded-For|X-Real-IP' --glob='*.go' src/
+```
+
+For each `keyGenerator` / equivalent, ask: can the attacker freely change this key? If yes, the limit is bypassable.
+
+### 9d. Reasonable budgets per endpoint class
+
+Tight defaults:
+
+| Endpoint class | Budget | Window | Key |
+|---|---|---|---|
+| `/sign-in/email`, `/sign-in/passkey` | 5 | 1 min | IP + email |
+| `/sign-up/email` | 3 | 1 min | IP |
+| `/request-password-reset`, `/send-verification-email`, `/resend-otp` | 3 | 10 min | email address |
+| `/two-factor/verify-otp`, `/verify-totp`, `/verify-backup-code` | 5 | 10 min | session ID |
+| `/is-username-available` and other enumeration oracles | 20 | 1 min | IP |
+| Cost-inflation endpoints (`/api/ai/*`, `/render`, `/export`) | 10 | 1 hour | user ID |
+| Outbound-URL endpoints (`/preview`, `/unfurl`, `/webhook/test`) | 10 | 1 min | user ID |
+| WebSocket new connections | 5 / sec + 50 concurrent | — | IP |
+| File upload | 10 | 1 min + per-user storage cap | user ID |
+| GraphQL — not count-based | depth ≤ 7, complexity ≤ 1000 | per request | query shape |
+
+Loose budget on a cheap endpoint is fine. Loose budget on a cost-inflation endpoint is a financial DoS.
+
+### 9e. Things that look like rate limits but aren't
+
+```bash
+# Fail2ban-style counter with no persistence — lost on process restart
+rg -n 'setTimeout\(.*reset|clearInterval\(|fail2ban' src/
+
+# Throttling that only applies to 2xx — leaves 4xx/5xx un-limited
+rg -nA3 'rateLimit\(' src/ | grep -E 'skip|skipSuccessfulRequests|skipFailedRequests'
+# `skipFailedRequests: true` means failed auth attempts DON'T count
+# That's the opposite of what you want for brute-force defence
+
+# One bucket shared across all users — protects availability, not accounts
+# Check that the limiter has a keyGenerator that differs per caller
+```
 
 ---
 

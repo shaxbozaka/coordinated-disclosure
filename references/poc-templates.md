@@ -187,6 +187,84 @@ measure("/api/auth/request-password-reset",
         n=10, label="request-password-reset")
 ```
 
+### 3b. Distributed-counter smoke test
+
+In-memory rate limiters count per process. Behind N replicas, effective budget is N× configured. Confirm from outside without source access:
+
+```python
+# Run the same posture probe from the same source IP in K parallel threads.
+# If counters are shared (Redis / edge), total throughput is still N.
+# If per-process behind K replicas, total throughput is ~N*K before 429s.
+import concurrent.futures, time, requests, urllib3
+from collections import Counter
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+H = {"User-Agent":"security-research/1.0 (authorized audit)"}
+BASE = "https://target.example"
+
+def burst(worker_id, n=12):
+    codes = []
+    for i in range(n):
+        r = requests.post(BASE + "/api/auth/sign-in/email",
+            json={"email":"nobody@pentest.test","password":f"w{worker_id}-{i}"},
+            headers={**H,"Content-Type":"application/json"}, timeout=6, verify=False)
+        codes.append(r.status_code)
+    return codes
+
+K = 4    # parallel workers
+with concurrent.futures.ThreadPoolExecutor(max_workers=K) as pool:
+    results = list(pool.map(burst, range(K)))
+
+all_codes = [c for row in results for c in row]
+cnt = Counter(all_codes)
+print(f"{K} workers × {len(results[0])} attempts = {len(all_codes)} total; {dict(cnt)}")
+# If 429s appear roughly at the same per-worker index across workers → counter is shared.
+# If 429s appear later (or not at all) when workers run in parallel → per-process counter;
+#   the effective budget is ~K× documented.
+```
+
+Don't run this without approval — it's a burst of ~50 requests in a few seconds. Keep K ≤ 4 and cap N per worker so total ≤ ~60.
+
+### 3c. X-Forwarded-For bypass smoke test
+
+If the server reads the client IP from `X-Forwarded-For` without validating the upstream chain, rotating the header unrate-limits you:
+
+```bash
+for i in $(seq 1 15); do
+  code=$(curl -sk -o /dev/null -w '%{http_code}' \
+    -X POST https://target.example/api/auth/sign-in/email \
+    -H "Content-Type: application/json" \
+    -H "X-Forwarded-For: 10.0.0.$i" \
+    -d '{"email":"nobody@pentest.test","password":"wrong"}')
+  echo "attempt $i  XFF=10.0.0.$i  $code"
+done
+# If all 15 return 401 (no 429 at all), XFF is trusted and limit is bypassable.
+# Also try: X-Real-IP, CF-Connecting-IP, True-Client-IP, X-Client-IP.
+```
+
+### 3d. Cost-inflation check
+
+A loose budget on a cheap endpoint is fine. A loose budget on an expensive endpoint is a financial DoS:
+
+```python
+# Measure latency as a proxy for cost. An endpoint that takes > 1s per call
+# AND allows > 100 calls/min per user is a cost-inflation candidate.
+import time, requests, urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def cost_probe(url, body):
+    t0 = time.time()
+    r = requests.post(url, json=body, timeout=30, verify=False)
+    return r.status_code, time.time() - t0
+
+# One call — measure baseline cost
+code, dt = cost_probe("https://target.example/api/render-pdf",
+                     {"resumeId": "<id>"})
+print(f"one call: {code} in {dt:.2f}s")
+# If dt > 1s: this is an expensive endpoint
+# Then re-run the posture probe against it — if no 429s appear at N=10,
+# score as cost-inflation DoS (High)
+```
+
 ## 4. SSRF error-shape oracle
 
 Probe an outbound-URL-accepting endpoint with a matrix of targets. The distinct error-string classes expose internal-network topology.
